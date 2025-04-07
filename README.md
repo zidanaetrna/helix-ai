@@ -1,4 +1,3 @@
-```markdown
 # Synthelix AI Auto-bot 🤖
 
 An automated bot for the Synthelix AI airdrop program that handles node operations, daily point claims, and wallet management.
@@ -11,7 +10,7 @@ An automated bot for the Synthelix AI airdrop program that handles node operatio
 - 📊 Points tracking and monitoring
 - ⏰ Smart timing for optimal reward collection
 - 🚀 24/7 operation with automatic retries
-```
+
 ## 🛠 Installation
 
 1. **Clone the repository:**
