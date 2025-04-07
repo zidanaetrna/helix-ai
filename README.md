@@ -16,7 +16,7 @@ An automated bot for the Synthelix AI airdrop program that handles node operatio
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/helix-ai.git
+   git clone https://github.com/zidanaetrna/helix-ai.git
    cd helix-ai
    ```
 
