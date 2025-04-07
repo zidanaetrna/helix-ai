@@ -1,5 +1,3 @@
-Here's a comprehensive `README.md` for your Synthelix AI Auto-bot project:
-
 ```markdown
 # Synthelix AI Auto-bot 🤖
 
