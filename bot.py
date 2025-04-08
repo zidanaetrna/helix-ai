@@ -28,16 +28,15 @@ RATE_LIMIT = "⏰"
 PROXY = "🔄"
 
 # Files to store timestamps and proxies
-TIMESTAMP_FILE = "last_submission.txt"
-DAILY_CLAIM_FILE = "last_daily_claim.txt"
+QUIET_PERIOD_FILE = "last_quiet_period.txt"  # File for tracking the 25-hour quiet period
 PROXY_FILE = "proxy.txt"
 
 # Project and creator defaults (can be overridden by .env)
 PROJECT_NAME = os.getenv("PROJECT_NAME", "Synthelix Ai")
 CREATOR_NAME = os.getenv("CREATOR_NAME", "aetrna")
 
-# Default sleep time (30 minutes to avoid rate limits)
-DEFAULT_SLEEP_SECONDS = 1800  # 30 minutes
+# Sleep time for the quiet period (25 hours)
+QUIET_PERIOD_SECONDS = 25 * 60 * 60  # 25 hours
 RATE_LIMIT_SLEEP_SECONDS = 3600  # 1 hour if rate-limited
 
 # Proxy list and current proxy index
@@ -221,17 +220,29 @@ def get_cookies(session_token):
         "__Secure-next-auth.callback-url": "https://dashboard.synthelix.io/"
     }
 
-# Function to save last daily claim timestamp
-def save_daily_claim_timestamp(timestamp):
-    with open(DAILY_CLAIM_FILE, "w") as f:
-        f.write(str(timestamp))
+# Function to save last quiet period timestamp
+def save_quiet_period_timestamp():
+    with open(QUIET_PERIOD_FILE, "w") as f:
+        f.write(str(time.time()))
 
-# Function to load last daily claim timestamp
-def load_daily_claim_timestamp():
-    if os.path.exists(DAILY_CLAIM_FILE):
-        with open(DAILY_CLAIM_FILE, "r") as f:
+# Function to load last quiet period timestamp
+def load_quiet_period_timestamp():
+    if os.path.exists(QUIET_PERIOD_FILE):
+        with open(QUIET_PERIOD_FILE, "r") as f:
             return float(f.read().strip())
-    return 0  # If no timestamp exists, assume it's the first claim
+    return 0  # If no timestamp exists, assume it's the first run
+
+# Function to check if 25 hours have passed since last quiet period
+def should_perform_actions():
+    last_quiet_period = load_quiet_period_timestamp()
+    current_time = time.time()
+    return (current_time - last_quiet_period) >= QUIET_PERIOD_SECONDS
+
+# Function to get time until next action cycle
+def time_until_next_action_cycle():
+    last_quiet_period = load_quiet_period_timestamp()
+    next_action_time = last_quiet_period + QUIET_PERIOD_SECONDS
+    return datetime.fromtimestamp(next_action_time)
 
 # Function to claim daily points
 def claim_daily_points(cookies, wallet_address):
@@ -252,52 +263,33 @@ def claim_daily_points(cookies, wallet_address):
             last_daily_claim = data.get("lastDailyClaim", None)
             referral_bonus = data.get("referralBonusApplied", False)
             
-            if last_daily_claim:
-                last_claim_time = isoparse(last_daily_claim)
-                last_claim_timestamp = last_claim_time.timestamp()
-                save_daily_claim_timestamp(last_claim_timestamp)
-            
             print(f"{SUCCESS} {Fore.GREEN}Daily points claimed successfully!{Style.RESET_ALL}")
             print(f"{INFO} Points: {points}")
             print(f"{INFO} Referral Bonus Applied: {referral_bonus}")
             print(f"{INFO} Last Daily Claim: {last_daily_claim}")
-            return True, DEFAULT_SLEEP_SECONDS, None, None
+            return True, 0, None, None  # No sleep time needed here; main loop will handle the 25-hour sleep
         else:
             if response.status_code == 400:
                 print(f"{ERROR} {Fore.RED}Daily points already claimed or not available.{Style.RESET_ALL}")
-                save_daily_claim_timestamp(time.time())
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
             elif response.status_code == 429:
                 print(f"{RATE_LIMIT} {Fore.RED}Rate limit exceeded (429). Retrying after 1 hour...{Style.RESET_ALL}")
                 rotate_proxy()
                 return False, RATE_LIMIT_SLEEP_SECONDS, None, None
             elif response.status_code == 403:
                 new_session_token, new_project_id = update_credentials(wallet_address)
-                return False, DEFAULT_SLEEP_SECONDS, new_session_token, new_project_id
+                return False, 0, new_session_token, new_project_id
             else:
                 print(f"{ERROR} {Fore.RED}Failed to claim daily points. Status code: {response.status_code}{Style.RESET_ALL}")
                 print(f"{INFO} Response: {response.text}")
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
     except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         print(f"{ERROR} {Fore.RED}Proxy error: {str(e)}. Rotating proxy...{Style.RESET_ALL}")
         rotate_proxy()
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
     except Exception as e:
         print(f"{ERROR} {Fore.RED}Error claiming daily points: {str(e)}{Style.RESET_ALL}")
-        save_daily_claim_timestamp(time.time())
-        return False, DEFAULT_SLEEP_SECONDS, None, None
-
-# Function to check if daily claim is available
-def can_claim_daily():
-    last_claim_timestamp = load_daily_claim_timestamp()
-    current_time = time.time()
-    return (current_time - last_claim_timestamp) >= (24 * 60 * 60)
-
-# Function to get time until next daily claim
-def time_until_next_claim():
-    last_claim_timestamp = load_daily_claim_timestamp()
-    next_claim_time = last_claim_timestamp + (24 * 60 * 60)
-    return datetime.fromtimestamp(next_claim_time)
+        return False, 0, None, None
 
 # Function to get points
 def get_points(cookies, wallet_address):
@@ -317,7 +309,7 @@ def get_points(cookies, wallet_address):
                 print(f"{SUCCESS} {Fore.GREEN}Points fetched: {points_data}{Style.RESET_ALL}")
             else:
                 print(f"{CHECK} {Fore.YELLOW}Points unchanged (304 Not Modified){Style.RESET_ALL}")
-            return True, DEFAULT_SLEEP_SECONDS, None, None
+            return True, 0, None, None  # No sleep time needed here; main loop will handle the 25-hour sleep
         else:
             if response.status_code == 429:
                 print(f"{RATE_LIMIT} {Fore.RED}Rate limit exceeded (429). Retrying after 1 hour...{Style.RESET_ALL}")
@@ -325,18 +317,18 @@ def get_points(cookies, wallet_address):
                 return False, RATE_LIMIT_SLEEP_SECONDS, None, None
             elif response.status_code == 403:
                 new_session_token, new_project_id = update_credentials(wallet_address)
-                return False, DEFAULT_SLEEP_SECONDS, new_session_token, new_project_id
+                return False, 0, new_session_token, new_project_id
             else:
                 print(f"{ERROR} {Fore.RED}Failed to fetch points. Status code: {response.status_code}{Style.RESET_ALL}")
                 print(f"{INFO} Response: {response.text}")
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
     except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         print(f"{ERROR} {Fore.RED}Proxy error: {str(e)}. Rotating proxy...{Style.RESET_ALL}")
         rotate_proxy()
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
     except Exception as e:
         print(f"{ERROR} {Fore.RED}Error fetching points: {str(e)}{Style.RESET_ALL}")
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
 
 # Function to check online status
 def check_status(cookies, wallet_address):
@@ -352,7 +344,7 @@ def check_status(cookies, wallet_address):
         )
         if response.status_code == 200:
             print(f"{ONLINE} {Fore.GREEN}Status: Online{Style.RESET_ALL}")
-            return True, DEFAULT_SLEEP_SECONDS, None, None
+            return True, 0, None, None  # No sleep time needed here; main loop will handle the 25-hour sleep
         else:
             if response.status_code == 429:
                 print(f"{RATE_LIMIT} {Fore.RED}Rate limit exceeded (429). Retrying after 1 hour...{Style.RESET_ALL}")
@@ -360,17 +352,17 @@ def check_status(cookies, wallet_address):
                 return False, RATE_LIMIT_SLEEP_SECONDS, None, None
             elif response.status_code == 403:
                 new_session_token, new_project_id = update_credentials(wallet_address)
-                return False, DEFAULT_SLEEP_SECONDS, new_session_token, new_project_id
+                return False, 0, new_session_token, new_project_id
             else:
                 print(f"{OFFLINE} {Fore.RED}Status: Offline (Status code: {response.status_code}){Style.RESET_ALL}")
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
     except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         print(f"{ERROR} {Fore.RED}Proxy error: {str(e)}. Rotating proxy...{Style.RESET_ALL}")
         rotate_proxy()
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
     except Exception as e:
         print(f"{ERROR} {Fore.RED}Error checking status: {str(e)}{Style.RESET_ALL}")
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
 
 # Function to start the node
 def start_node(cookies, wallet_address):
@@ -387,8 +379,7 @@ def start_node(cookies, wallet_address):
         if response.status_code == 200:
             print(f"{SUCCESS} {Fore.GREEN}Node started successfully!{Style.RESET_ALL}")
             print(f"{INFO} Response: {response.text}")
-            save_timestamp()
-            return True, DEFAULT_SLEEP_SECONDS, None, None
+            return True, 0, None, None  # No sleep time needed here; main loop will handle the 25-hour sleep
         else:
             if response.status_code == 429:
                 print(f"{RATE_LIMIT} {Fore.RED}Rate limit exceeded (429). Retrying after 1 hour...{Style.RESET_ALL}")
@@ -396,18 +387,18 @@ def start_node(cookies, wallet_address):
                 return False, RATE_LIMIT_SLEEP_SECONDS, None, None
             elif response.status_code == 403:
                 new_session_token, new_project_id = update_credentials(wallet_address)
-                return False, DEFAULT_SLEEP_SECONDS, new_session_token, new_project_id
+                return False, 0, new_session_token, new_project_id
             else:
                 print(f"{ERROR} {Fore.RED}Failed to start node. Status code: {response.status_code}{Style.RESET_ALL}")
                 print(f"{INFO} Response: {response.text}")
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
     except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         print(f"{ERROR} {Fore.RED}Proxy error: {str(e)}. Rotating proxy...{Style.RESET_ALL}")
         rotate_proxy()
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
     except Exception as e:
         print(f"{ERROR} {Fore.RED}Error starting node: {str(e)}{Style.RESET_ALL}")
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
 
 # Function to connect wallet
 def connect_wallet(wallet_address, project_id, cookies):
@@ -431,7 +422,7 @@ def connect_wallet(wallet_address, project_id, cookies):
         if response.status_code == 200:
             print(f"{SUCCESS} {Fore.GREEN}Wallet connected successfully!{Style.RESET_ALL}")
             print(f"{INFO} Response: {response.json()}")
-            return True, DEFAULT_SLEEP_SECONDS, None, None
+            return True, 0, None, None  # No sleep time needed here; main loop will handle the 25-hour sleep
         else:
             if response.status_code == 429:
                 print(f"{RATE_LIMIT} {Fore.RED}Rate limit exceeded (429). Retrying after 1 hour...{Style.RESET_ALL}")
@@ -439,36 +430,18 @@ def connect_wallet(wallet_address, project_id, cookies):
                 return False, RATE_LIMIT_SLEEP_SECONDS, None, None
             elif response.status_code == 403:
                 new_session_token, new_project_id = update_credentials(wallet_address)
-                return False, DEFAULT_SLEEP_SECONDS, new_session_token, new_project_id
+                return False, 0, new_session_token, new_project_id
             else:
                 print(f"{ERROR} {Fore.RED}Failed to connect wallet. Status code: {response.status_code}{Style.RESET_ALL}")
                 print(f"{INFO} Response: {response.text}")
-                return False, DEFAULT_SLEEP_SECONDS, None, None
+                return False, 0, None, None
     except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         print(f"{ERROR} {Fore.RED}Proxy error: {str(e)}. Rotating proxy...{Style.RESET_ALL}")
         rotate_proxy()
-        return False, DEFAULT_SLEEP_SECONDS, None, None
+        return False, 0, None, None
     except Exception as e:
         print(f"{ERROR} {Fore.RED}Error connecting wallet: {str(e)}{Style.RESET_ALL}")
-        return False, DEFAULT_SLEEP_SECONDS, None, None
-
-# Save last submission timestamp
-def save_timestamp():
-    with open(TIMESTAMP_FILE, "w") as f:
-        f.write(str(time.time()))
-
-# Load last submission timestamp
-def load_timestamp():
-    if os.path.exists(TIMESTAMP_FILE):
-        with open(TIMESTAMP_FILE, "r") as f:
-            return float(f.read().strip())
-    return 0  # If no timestamp exists, assume it's the first run
-
-# Check if 24 hours have passed since last submission
-def should_submit():
-    last_submission = load_timestamp()
-    current_time = time.time()
-    return (current_time - last_submission) >= (24 * 60 * 60)
+        return False, 0, None, None
 
 # Main bot loop
 def run_bot(session_token, project_id, wallet_address):
@@ -477,12 +450,22 @@ def run_bot(session_token, project_id, wallet_address):
     while True:
         print(f"\n{INFO} {Fore.MAGENTA}--- Bot Cycle Start ---{Style.RESET_ALL}")
         
+        # Check if 25 hours have passed since the last quiet period
+        if not should_perform_actions():
+            next_action = time_until_next_action_cycle()
+            time_to_sleep = (next_action - datetime.now()).total_seconds()
+            print(f"{WAITING} {Fore.YELLOW}Next action cycle at: {next_action.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+            print(f"{WAITING} {Fore.CYAN}Sleeping for {time_to_sleep // 3600:.1f} hours...{Style.RESET_ALL}")
+            time.sleep(time_to_sleep)
+            continue
+        
+        # If 25 hours have passed, perform all actions in one cycle
         # Check status
         is_online, sleep_seconds, new_session_token, new_project_id = check_status(cookies, wallet_address)
         if new_session_token and new_project_id:
             session_token, project_id = new_session_token, new_project_id
             cookies = get_cookies(session_token)
-        if sleep_seconds > DEFAULT_SLEEP_SECONDS:
+        if sleep_seconds > 0:  # Rate limit encountered
             print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
             time.sleep(sleep_seconds)
             continue
@@ -492,74 +475,56 @@ def run_bot(session_token, project_id, wallet_address):
         if new_session_token and new_project_id:
             session_token, project_id = new_session_token, new_project_id
             cookies = get_cookies(session_token)
-        if sleep_seconds > DEFAULT_SLEEP_SECONDS:
+        if sleep_seconds > 0:  # Rate limit encountered
             print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
             time.sleep(sleep_seconds)
             continue
         
-        # Check and claim daily points
-        if can_claim_daily():
-            if is_online:
-                success, sleep_seconds, new_session_token, new_project_id = claim_daily_points(cookies, wallet_address)
-                if new_session_token and new_project_id:
-                    session_token, project_id = new_session_token, new_project_id
-                    cookies = get_cookies(session_token)
-                if sleep_seconds > DEFAULT_SLEEP_SECONDS:
-                    print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
-                    time.sleep(sleep_seconds)
-                    continue
-            else:
-                print(f"{OFFLINE} {Fore.RED}Cannot claim daily points while offline.{Style.RESET_ALL}")
-        else:
-            next_claim = time_until_next_claim()
-            print(f"{WAITING} {Fore.YELLOW}Next daily claim at: {next_claim.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
-        
-        # If offline, retry node submission
-        if not is_online:
-            print(f"{OFFLINE} {Fore.RED}Offline detected. Retrying node submission...{Style.RESET_ALL}")
-            success, sleep_seconds, new_session_token, new_project_id = start_node(cookies, wallet_address)
+        # Claim daily points if online
+        if is_online:
+            success, sleep_seconds, new_session_token, new_project_id = claim_daily_points(cookies, wallet_address)
             if new_session_token and new_project_id:
                 session_token, project_id = new_session_token, new_project_id
                 cookies = get_cookies(session_token)
-            if sleep_seconds > DEFAULT_SLEEP_SECONDS:
+            if sleep_seconds > 0:  # Rate limit encountered
                 print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
                 time.sleep(sleep_seconds)
                 continue
-            if success:
-                print(f"{CHECK} {Fore.GREEN}Node submitted after offline retry.{Style.RESET_ALL}")
-            time.sleep(60)  # Wait 1 minute before next cycle if offline
+        else:
+            print(f"{OFFLINE} {Fore.RED}Cannot claim daily points while offline.{Style.RESET_ALL}")
+        
+        # Submit node (connect wallet and start node)
+        success, sleep_seconds, new_session_token, new_project_id = connect_wallet(wallet_address, project_id, cookies)
+        if new_session_token and new_project_id:
+            session_token, project_id = new_session_token, new_project_id
+            cookies = get_cookies(session_token)
+        if sleep_seconds > 0:  # Rate limit encountered
+            print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
+            time.sleep(sleep_seconds)
             continue
         
-        # Check if it's time to submit (every 24 hours)
-        if should_submit():
-            success, sleep_seconds, new_session_token, new_project_id = connect_wallet(wallet_address, project_id, cookies)
-            if new_session_token and new_project_id:
-                session_token, project_id = new_session_token, new_project_id
-                cookies = get_cookies(session_token)
-            if sleep_seconds > DEFAULT_SLEEP_SECONDS:
-                print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
-                time.sleep(sleep_seconds)
-                continue
-            success, sleep_seconds, new_session_token, new_project_id = start_node(cookies, wallet_address)
-            if new_session_token and new_project_id:
-                session_token, project_id = new_session_token, new_project_id
-                cookies = get_cookies(session_token)
-            if sleep_seconds > DEFAULT_SLEEP_SECONDS:
-                print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
-                time.sleep(sleep_seconds)
-                continue
-            if success:
-                print(f"{CHECK} {Fore.GREEN}Node submitted successfully (24-hour cycle).{Style.RESET_ALL}")
-            else:
-                print(f"{ERROR} {Fore.RED}Node submission failed. Will retry in 24 hours.{Style.RESET_ALL}")
-                save_timestamp()  # Update timestamp even on error to avoid rapid retries
-        else:
-            next_submission = datetime.fromtimestamp(load_timestamp() + 24 * 60 * 60)
-            print(f"{WAITING} {Fore.YELLOW}Next node submission at: {next_submission.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+        success, sleep_seconds, new_session_token, new_project_id = start_node(cookies, wallet_address)
+        if new_session_token and new_project_id:
+            session_token, project_id = new_session_token, new_project_id
+            cookies = get_cookies(session_token)
+        if sleep_seconds > 0:  # Rate limit encountered
+            print(f"{WAITING} {Fore.CYAN}Sleeping for {sleep_seconds // 60} minutes due to rate limit...{Style.RESET_ALL}")
+            time.sleep(sleep_seconds)
+            continue
         
-        # Sleep for the default period (30 minutes) before next cycle
-        print(f"{WAITING} {Fore.CYAN}Sleeping for {DEFAULT_SLEEP_SECONDS // 60} minutes...{Style.RESET_ALL}")
-        time.sleep(DEFAULT_SLEEP_SECONDS)
+        if success:
+            print(f"{CHECK} {Fore.GREEN}Node submitted successfully.{Style.RESET_ALL}")
+        else:
+            print(f"{ERROR} {Fore.RED}Node submission failed.{Style.RESET_ALL}")
+        
+        # Update the quiet period timestamp after all actions are complete
+        save_quiet_period_timestamp()
+        
+        # Sleep for the full 25 hours before the next cycle
+        next_action = time_until_next_action_cycle()
+        print(f"{WAITING} {Fore.YELLOW}Next action cycle at: {next_action.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+        print(f"{WAITING} {Fore.CYAN}Sleeping for {QUIET_PERIOD_SECONDS // 3600} hours...{Style.RESET_ALL}")
+        time.sleep(QUIET_PERIOD_SECONDS)
 
 # Main execution
 if __name__ == "__main__":
